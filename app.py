@@ -6,6 +6,7 @@ import argparse
 import itertools
 from collections import Counter
 from collections import deque
+import math
 
 import cv2 as cv
 import numpy as np
@@ -38,6 +39,9 @@ def get_args():
     return args
 
 
+bezier_image = None
+
+
 def main():
     # 引数解析 #################################################################
     args = get_args()
@@ -45,6 +49,8 @@ def main():
     cap_device = args.device
     cap_width = args.width
     cap_height = args.height
+
+    bezier_image = np.zeros((cap_height, cap_width, 3), np.uint8)
 
     use_static_image_mode = args.use_static_image_mode
     min_detection_confidence = args.min_detection_confidence
@@ -61,7 +67,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=1,
+        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -161,6 +167,7 @@ def main():
                 # 描画
                 debug_image = draw_bounding_rect(use_brect, debug_image, brect)
                 debug_image = draw_landmarks(debug_image, landmark_list)
+
                 debug_image = draw_info_text(
                     debug_image,
                     brect,
@@ -168,11 +175,26 @@ def main():
                     keypoint_classifier_labels[hand_sign_id],
                     point_history_classifier_labels[most_common_fg_id[0][0]],
                 )
+
+                get_bezier_ctrl_points(
+                    debug_image,
+                    brect,
+                    handedness,
+                    keypoint_classifier_labels[hand_sign_id],
+                    point_history_classifier_labels[most_common_fg_id[0][0]],
+                )
+
         else:
             point_history.append([0, 0])
 
         debug_image = draw_point_history(debug_image, point_history)
         debug_image = draw_info(debug_image, fps, mode, number)
+
+        for point in bezier_ctrl_points:
+            cv.circle(debug_image, point, 10, (0, 255, 0), -1)
+
+        if (bezier_ctrl_points) == 4:
+            debug_image = draw_bezier_line(debug_image, bezier_ctrl_points)
 
         # 画面反映 #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -490,6 +512,60 @@ def draw_bounding_rect(use_brect, image, brect):
                      (0, 0, 0), 1)
 
     return image
+
+
+bezier_ctrl_points = []
+open_hand = True
+
+
+def calculate_bezier_point(t, P0, P1, P2, P3):
+    x = (1 - t)**3 * P0[0] + 3 * (1 - t)**2 * t * \
+        P1[0] + 3 * (1 - t) * t**2 * P2[0] + t**3 * P3[0]
+    y = (1 - t)**3 * P0[1] + 3 * (1 - t)**2 * t * \
+        P1[1] + 3 * (1 - t) * t**2 * P2[1] + t**3 * P3[1]
+    return (int(x), int(y))
+
+
+def draw_bezier_line(debug_image, control_points):
+    P0, P1, P2, P3 = control_points
+
+    steps = 100
+    for t in range(steps + 1):
+        t = t / steps
+        bezier_point = calculate_bezier_point(t, P0, P1, P2, P3)
+        cv.circle(debug_image, bezier_point, 2, (255, 0, 0), -1)
+
+    return debug_image
+
+
+def get_bezier_ctrl_points(image, brect, handedness, hand_sign_text,
+                           finger_gesture_text):
+
+    global open_hand, bezier_ctrl_points
+
+    # Mid Point
+    x_m_point = (brect[0] + brect[2])/2
+    y_m_point = (brect[1] + brect[3])/2
+    mid_point = (int(x_m_point), int(y_m_point))
+
+    if "Open" in hand_sign_text:
+        open_hand = True
+    if "Close" in hand_sign_text:
+        if open_hand:
+            if len(bezier_ctrl_points) < 4:
+                for point in bezier_ctrl_points:
+                    dist = euclidian_distance(mid_point, point)
+                    if dist <= 50:
+                        return
+                bezier_ctrl_points.append(mid_point)
+
+            open_hand = False
+
+    print(bezier_ctrl_points)
+
+
+def euclidian_distance(p, q):
+    return math.sqrt(math.pow((p[0]-q[0]), 2) + math.pow((p[1]-q[1]), 2))
 
 
 def draw_info_text(image, brect, handedness, hand_sign_text,
